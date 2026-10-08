@@ -707,6 +707,92 @@ router.post(
   }
 );
 
+// =====================================================
+// FACULTY MANUAL TIME-OUT
+// =====================================================
+router.patch("/:id/time-out", verifyToken, async (req, res) => {
+  try {
+    const { timeOut } = req.body;
+
+    // Faculty only
+    if (req.user.role !== "faculty") {
+      return res.status(403).json({
+        message: "Only faculty can manually set Time Out.",
+      });
+    }
+
+    // Validate Time Out
+    if (!timeOut || typeof timeOut !== "string" || !timeOut.trim()) {
+      return res.status(400).json({
+        message: "Time Out is required.",
+      });
+    }
+
+    console.log("MANUAL TIME-OUT ATTENDANCE ID:", req.params.id);
+
+const attendance = await Attendance.findById(req.params.id);
+
+    if (!attendance) {
+      return res.status(404).json({
+        message: "Attendance record not found.",
+      });
+    }
+
+    // Find the schedule connected to this attendance
+    const schedule = await Schedule.findById(attendance.scheduleId);
+
+    if (!schedule) {
+      return res.status(404).json({
+        message: "Schedule not found.",
+      });
+    }
+
+    // Make sure this schedule belongs to the logged-in faculty
+    if (String(schedule.faculty) !== String(req.user.id)) {
+      return res.status(403).json({
+        message: "You are not authorized to update this attendance record.",
+      });
+    }
+
+    // Only Present/Late attendance should receive Time Out
+    if (
+      attendance.status !== "Present" &&
+      attendance.status !== "Late"
+    ) {
+      return res.status(400).json({
+        message: "Only Present or Late attendance can have a Time Out.",
+      });
+    }
+
+    // Do not create a duplicate or overwrite an existing Time Out
+    if (attendance.timeOut && attendance.timeOut.trim() !== "") {
+      return res.status(400).json({
+        message: "This attendance already has a Time Out.",
+      });
+    }
+
+    attendance.timeOut = timeOut.trim();
+
+    await attendance.save();
+
+    const updatedAttendance = await Attendance.findById(attendance._id)
+      .populate("studentId", "firstName middleName lastName schoolId profileImage")
+      .populate("scheduleId");
+
+    return res.status(200).json({
+      message: "Time Out saved successfully.",
+      attendance: updatedAttendance,
+    });
+  } catch (error) {
+    console.error("MANUAL TIME-OUT ERROR:", error);
+
+    return res.status(500).json({
+      message: "Failed to save Time Out.",
+      error: error.message,
+    });
+  }
+});
+
 // ================= DELETE =================
 
 router.delete(
