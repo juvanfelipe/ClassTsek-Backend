@@ -64,12 +64,19 @@ router.get("/faculty/:facultyId", async (req, res) => {
       .populate(
         "faculty",
         "firstName middleName lastName fullName schoolId"
+      )
+      .populate(
+        "academicYear",
+        "year"
+      )
+      .populate(
+        "semester",
+        "name"
       );
 
     res.json(schedules);
   } catch (error) {
     console.error("GET FACULTY SCHEDULES ERROR:", error);
-
     res.status(500).json({
       message: error.message,
     });
