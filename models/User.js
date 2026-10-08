@@ -97,18 +97,38 @@ faceSamples: {
         type: String,
         required: true,
       },
+
       source: {
         type: String,
         enum: ["camera", "upload"],
         required: true,
       },
+
       createdAt: {
         type: Date,
         default: Date.now,
       },
+
+      // Cloudinary storage information
+      cloudinaryPublicId: {
+        type: String,
+        default: null,
+      },
+
+      cloudinaryResourceType: {
+        type: String,
+        default: null,
+      },
+
+      cloudinaryType: {
+        type: String,
+        default: null,
+      },
     },
   ],
+
   default: [],
+
   select: false,
 },
 

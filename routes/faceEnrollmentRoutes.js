@@ -1,10 +1,29 @@
 const express = require("express");
+require("dotenv").config();
+
 const router = express.Router();
 
 const multer = require("multer");
+
 const path = require("path");
+
 const fs = require("fs");
+
 const sharp = require("sharp");
+
+const { v2: cloudinary } = require("cloudinary");
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+console.log("FACE CLOUDINARY CONFIG:", {
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key_exists: !!process.env.CLOUDINARY_API_KEY,
+  api_secret_exists: !!process.env.CLOUDINARY_API_SECRET,
+});
 
 const User = require("../models/User");
 const Schedule = require("../models/Schedule");
@@ -29,6 +48,23 @@ const uploadDir = path.join(
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, {
     recursive: true,
+  });
+}
+
+// =====================================================
+// GENERATE SIGNED CLOUDINARY FACE IMAGE URL
+// =====================================================
+
+function getCloudinaryFaceUrl(publicId) {
+  if (!publicId) {
+    return null;
+  }
+
+  return cloudinary.url(publicId, {
+    resource_type: "image",
+    type: "authenticated",
+    secure: true,
+    sign_url: true,
   });
 }
 
@@ -89,7 +125,6 @@ router.post(
   verifyToken,
   requireAdmin,
   upload.single("image"),
-
   async (req, res) => {
     try {
       const { schoolId } = req.params;
@@ -133,7 +168,9 @@ router.post(
         imageMetadata =
           await sharp(req.file.path).metadata();
       } catch (error) {
-        fs.unlinkSync(req.file.path);
+        if (fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
 
         return res.status(400).json({
           message:
@@ -151,7 +188,9 @@ router.post(
         imageMetadata.width < 112 ||
         imageMetadata.height < 112
       ) {
-        fs.unlinkSync(req.file.path);
+        if (fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
 
         return res.status(400).json({
           message:
@@ -170,7 +209,9 @@ router.post(
         }).select("+faceSamples");
 
       if (!student) {
-        fs.unlinkSync(req.file.path);
+        if (fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
 
         return res.status(404).json({
           message: "Student not found.",
@@ -185,7 +226,9 @@ router.post(
         student.faceSamples &&
         student.faceSamples.length >= 5
       ) {
-        fs.unlinkSync(req.file.path);
+        if (fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
 
         return res.status(400).json({
           message:
@@ -194,15 +237,60 @@ router.post(
       }
 
       // -------------------------------------------------
-      // Store relative path
+      // Generate Cloudinary public ID
       // -------------------------------------------------
 
-      const relativePath = path
-        .relative(
-          path.join(__dirname, ".."),
-          req.file.path
-        )
-        .replace(/\\/g, "/");
+      const publicId =
+        `classtsek/face-samples/${path.parse(
+          req.file.filename
+        ).name}`;
+
+      // -------------------------------------------------
+      // Upload temporary image to Cloudinary
+      // -------------------------------------------------
+
+      let cloudinaryResult;
+
+      try {
+        cloudinaryResult =
+          await cloudinary.uploader.upload(
+            req.file.path,
+            {
+              public_id: publicId,
+              resource_type: "image",
+              type: "authenticated",
+              overwrite: true,
+            }
+          );
+      } catch (cloudinaryError) {
+        console.error(
+          "CLOUDINARY FACE UPLOAD ERROR:",
+          cloudinaryError
+        );
+
+        if (fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
+
+        return res.status(500).json({
+          message:
+            "Unable to upload face image to Cloudinary.",
+        });
+      }
+
+      // -------------------------------------------------
+      // Store relative path
+      //
+      // Keep this for legacy compatibility.
+      // -------------------------------------------------
+
+      const relativePath =
+        path
+          .relative(
+            path.join(__dirname, ".."),
+            req.file.path
+          )
+          .replace(/\\/g, "/");
 
       // -------------------------------------------------
       // Add face sample
@@ -212,6 +300,12 @@ router.post(
         imagePath: relativePath,
         source,
         createdAt: new Date(),
+        cloudinaryPublicId:
+          cloudinaryResult.public_id,
+        cloudinaryResourceType:
+          cloudinaryResult.resource_type,
+        cloudinaryType:
+          cloudinaryResult.type,
       });
 
       student.faceEnrollmentStatus =
@@ -219,16 +313,27 @@ router.post(
 
       await student.save();
 
+      // -------------------------------------------------
+      // Delete temporary local file
+      // -------------------------------------------------
+
+      if (fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+
+      // -------------------------------------------------
+      // Success
+      // -------------------------------------------------
+
       return res.status(201).json({
         message:
           "Face sample enrolled successfully.",
-
         faceEnrollmentStatus:
           student.faceEnrollmentStatus,
-
         sampleCount:
           student.faceSamples.length,
       });
+
     } catch (error) {
       console.error(
         "FACE ENROLLMENT ERROR:",
@@ -507,80 +612,136 @@ router.get(
       // GET LATEST SAMPLE
       // =================================================
 
-      const sample =
-        student.faceSamples[
-          student.faceSamples.length - 1
-        ];
+      // =================================================*
+// GET LATEST SAMPLE
+// =================================================
 
-      const relativePath =
-        sample.imagePath;
+const sample =
+  student.faceSamples[
+    student.faceSamples.length - 1
+  ];
 
-      const absolutePath =
-        path.resolve(
-          __dirname,
-          "..",
-          relativePath
-        );
+// =================================================*
+// CLOUDINARY SAMPLE
+// =================================================
 
-      // =================================================
-      // SECURITY CHECK
-      // Make sure file stays inside upload directory.
-      // =================================================
-
-      const resolvedUploadDir =
-        path.resolve(uploadDir) +
-        path.sep;
-
-      if (
-        !absolutePath.startsWith(
-          resolvedUploadDir
-        )
-      ) {
-        return res.status(400).json({
-          message:
-            "Invalid face sample path.",
-        });
-      }
-
-      // =================================================
-      // CHECK FILE
-      // =================================================
-
-      const fileExists =
-        fs.existsSync(absolutePath);
-
-      console.log(
-        "FACE IMAGE REQUEST:",
-        schoolId,
-        "ROLE:",
-        role,
-        "PATH:",
-        absolutePath,
-        "EXISTS:",
-        fileExists
+if (sample.cloudinaryPublicId) {
+  try {
+    const signedUrl =
+      getCloudinaryFaceUrl(
+        sample.cloudinaryPublicId
       );
 
-      if (!fileExists) {
-        return res.status(404).json({
-          message:
-            "Face image file is missing.",
-        });
-      }
+    console.log(
+      "FACE IMAGE FROM CLOUDINARY:",
+      schoolId,
+      "ROLE:",
+      role,
+      "PUBLIC ID:",
+      sample.cloudinaryPublicId
+    );
 
-      // =================================================
-      // SEND IMAGE
-      // =================================================
+    const cloudinaryResponse =
+      await fetch(signedUrl);
 
-      res.set(
-        "Cache-Control",
-        "no-store"
+    if (!cloudinaryResponse.ok) {
+      console.error(
+        "CLOUDINARY IMAGE FETCH FAILED:",
+        cloudinaryResponse.status
       );
 
-      res.type("image/jpeg");
+      return res.status(404).json({
+        message:
+          "Cloudinary face image could not be retrieved.",
+      });
+    }
 
-      return res.sendFile(
-        absolutePath
+    const imageBuffer =
+      Buffer.from(
+        await cloudinaryResponse.arrayBuffer()
       );
+
+    res.set(
+      "Cache-Control",
+      "no-store"
+    );
+
+    res.type("image/jpeg");
+
+    return res.send(imageBuffer);
+  } catch (cloudinaryError) {
+    console.error(
+      "CLOUDINARY FACE IMAGE ERROR:",
+      cloudinaryError
+    );
+
+    return res.status(500).json({
+      message:
+        "Unable to retrieve Cloudinary face image.",
+    });
+  }
+}
+
+// =================================================*
+// LEGACY LOCAL FILE FALLBACK
+// =================================================
+
+const relativePath =
+  sample.imagePath;
+
+const absolutePath =
+  path.resolve(
+    __dirname,
+    "..",
+    relativePath
+  );
+
+const resolvedUploadDir =
+  path.resolve(uploadDir) +
+  path.sep;
+
+if (
+  !absolutePath.startsWith(
+    resolvedUploadDir
+  )
+) {
+  return res.status(400).json({
+    message:
+      "Invalid face sample path.",
+  });
+}
+
+const fileExists =
+  fs.existsSync(absolutePath);
+
+console.log(
+  "FACE IMAGE REQUEST:",
+  schoolId,
+  "ROLE:",
+  role,
+  "PATH:",
+  absolutePath,
+  "EXISTS:",
+  fileExists
+);
+
+if (!fileExists) {
+  return res.status(404).json({
+    message:
+      "Face image file is missing.",
+  });
+}
+
+res.set(
+  "Cache-Control",
+  "no-store"
+);
+
+res.type("image/jpeg");
+
+return res.sendFile(
+  absolutePath
+);
 
     } catch (error) {
       console.error(
@@ -1137,63 +1298,116 @@ router.get(
       }
 
       const sample =
-        student.faceSamples[index];
+  student.faceSamples[index];
 
-      const absolutePath =
-        path.resolve(
-          __dirname,
-          "..",
-          sample.imagePath
-        );
+// =================================================*
+// CLOUDINARY SAMPLE
+// =================================================
 
-      // -------------------------------------------------
-      // Security check
-      // -------------------------------------------------
-
-      const resolvedUploadDir =
-        path.resolve(uploadDir) +
-        path.sep;
-
-      if (
-        !absolutePath.startsWith(
-          resolvedUploadDir
-        )
-      ) {
-        return res.status(400).json({
-          message:
-            "Invalid face sample path.",
-        });
-      }
-
-      // -------------------------------------------------
-      // Check file
-      // -------------------------------------------------
-
-      if (
-        !fs.existsSync(
-          absolutePath
-        )
-      ) {
-        return res.status(404).json({
-          message:
-            "Face image file is missing.",
-        });
-      }
-
-      // -------------------------------------------------
-      // Send image
-      // -------------------------------------------------
-
-      res.set(
-        "Cache-Control",
-        "no-store"
+if (sample.cloudinaryPublicId) {
+  try {
+    const signedUrl =
+      getCloudinaryFaceUrl(
+        sample.cloudinaryPublicId
       );
 
-      res.type("image/jpeg");
+    console.log(
+      "FACE SAMPLE FROM CLOUDINARY:",
+      student.schoolId,
+      "SAMPLE INDEX:",
+      index,
+      "PUBLIC ID:",
+      sample.cloudinaryPublicId
+    );
 
-      return res.sendFile(
-        absolutePath
+    const cloudinaryResponse =
+      await fetch(signedUrl);
+
+    if (!cloudinaryResponse.ok) {
+      console.error(
+        "CLOUDINARY SAMPLE FETCH FAILED:",
+        cloudinaryResponse.status
       );
+
+      return res.status(404).json({
+        message:
+          "Cloudinary face sample could not be retrieved.",
+      });
+    }
+
+    const imageBuffer =
+      Buffer.from(
+        await cloudinaryResponse.arrayBuffer()
+      );
+
+    res.set(
+      "Cache-Control",
+      "no-store"
+    );
+
+    res.type("image/jpeg");
+
+    return res.send(imageBuffer);
+  } catch (cloudinaryError) {
+    console.error(
+      "CLOUDINARY SAMPLE ERROR:",
+      cloudinaryError
+    );
+
+    return res.status(500).json({
+      message:
+        "Unable to retrieve Cloudinary face sample.",
+    });
+  }
+}
+
+// =================================================*
+// LEGACY LOCAL FILE FALLBACK
+// =================================================
+
+const absolutePath =
+  path.resolve(
+    __dirname,
+    "..",
+    sample.imagePath
+  );
+
+const resolvedUploadDir =
+  path.resolve(uploadDir) +
+  path.sep;
+
+if (
+  !absolutePath.startsWith(
+    resolvedUploadDir
+  )
+) {
+  return res.status(400).json({
+    message:
+      "Invalid face sample path.",
+  });
+}
+
+if (
+  !fs.existsSync(
+    absolutePath
+  )
+) {
+  return res.status(404).json({
+    message:
+      "Face image file is missing.",
+  });
+}
+
+res.set(
+  "Cache-Control",
+  "no-store"
+);
+
+res.type("image/jpeg");
+
+return res.sendFile(
+  absolutePath
+);
 
     } catch (error) {
 
