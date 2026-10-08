@@ -1,26 +1,36 @@
 const express = require("express");
+
 const router = express.Router();
 
 const Schedule = require("../models/Schedule");
 const Enrollment = require("../models/Enrollment");
 const User = require("../models/User");
+const Announcement = require("../models/Announcement");
 
-const isObjectId = id =>
+const isObjectId = (id) =>
   /^[0-9a-fA-F]{24}$/.test(String(id || ""));
 
-const getId = value =>
+const getId = (value) =>
   value?._id || value || null;
 
 
-/* ======================================================
-   FACULTY DASHBOARD
-====================================================== */
+// ======================================================
+// FACULTY DASHBOARD
+// ======================================================
 
 router.get("/dashboard/:facultyId", async (req, res) => {
   try {
     const { facultyId } = req.params;
 
-    console.log("FACULTY DASHBOARD ID:", facultyId);
+    console.log("====================================");
+    console.log("FACULTY DASHBOARD REQUEST");
+    console.log("Faculty ID:", facultyId);
+    console.log("====================================");
+
+
+    // ------------------------------------------------------
+    // GET FACULTY
+    // ------------------------------------------------------
 
     const faculty = await User.findById(
       facultyId,
@@ -33,14 +43,13 @@ router.get("/dashboard/:facultyId", async (req, res) => {
       });
     }
 
-    /*
-    ------------------------------------------------------
-    GET FACULTY SCHEDULES
 
-    Do NOT populate academicYear / semester here because
-    some existing schedules may store them as strings.
-    ------------------------------------------------------
-    */
+    // ------------------------------------------------------
+    // GET FACULTY SCHEDULES
+    //
+    // Do NOT populate academicYear / semester here because
+    // some existing schedules may store them as strings.
+    // ------------------------------------------------------
 
     const schedules = await Schedule.find({
       faculty: facultyId,
@@ -57,19 +66,20 @@ router.get("/dashboard/:facultyId", async (req, res) => {
       schedules.length
     );
 
-    /*
-    ------------------------------------------------------
-    TODAY
-    ------------------------------------------------------
-    */
+
+    // ------------------------------------------------------
+    // TODAY
+    // ------------------------------------------------------
 
     const today = new Date().toLocaleDateString(
       "en-US",
-      { weekday: "long" }
+      {
+        weekday: "long",
+      }
     );
 
-    const todaySchedules = schedules.filter(s => {
-      const days = String(s.days || "")
+    const todaySchedules = schedules.filter((schedule) => {
+      const days = String(schedule.days || "")
         .toLowerCase()
         .replace(/\s+/g, "");
 
@@ -78,16 +88,14 @@ router.get("/dashboard/:facultyId", async (req, res) => {
       );
     });
 
-    /*
-    ------------------------------------------------------
-    STUDENT COUNT
-    ------------------------------------------------------
-    */
+
+    // ------------------------------------------------------
+    // STUDENT COUNT
+    // ------------------------------------------------------
 
     const studentMap = new Map();
 
     for (const schedule of schedules) {
-
       const academicYear =
         getId(schedule.academicYear);
 
@@ -100,11 +108,10 @@ router.get("/dashboard/:facultyId", async (req, res) => {
         status: "Enrolled",
       };
 
-      /*
-      Academic Year can be either:
-      - ObjectId
-      - "2026-2027"
-      */
+
+      // Academic Year can be:
+      // - ObjectId
+      // - "2026-2027"
 
       if (academicYear) {
         query.academicYear = isObjectId(
@@ -114,16 +121,19 @@ router.get("/dashboard/:facultyId", async (req, res) => {
           : String(academicYear);
       }
 
-      /*
-      Semester can also be either an ObjectId
-      or a string.
-      */
+
+      // Semester can be:
+      // - ObjectId
+      // - "1st Semester"
 
       if (semester) {
-        query.semester = isObjectId(semester)
+        query.semester = isObjectId(
+          semester
+        )
           ? semester
           : String(semester);
       }
+
 
       console.log(
         "CHECKING CLASS:",
@@ -136,16 +146,17 @@ router.get("/dashboard/:facultyId", async (req, res) => {
         semester
       );
 
+
       try {
         const enrollments =
           await Enrollment.find(query)
             .select("student")
             .lean();
 
-        enrollments.forEach(e => {
-          if (e.student) {
+        enrollments.forEach((enrollment) => {
+          if (enrollment.student) {
             studentMap.set(
-              String(e.student),
+              String(enrollment.student),
               true
             );
           }
@@ -159,13 +170,49 @@ router.get("/dashboard/:facultyId", async (req, res) => {
       }
     }
 
-    /*
-    ------------------------------------------------------
-    RESPONSE
-    ------------------------------------------------------
-    */
 
-    res.json({
+    // ------------------------------------------------------
+    // ANNOUNCEMENTS
+    //
+    // Faculty should see:
+    // - announcements for everyone
+    // - announcements specifically for faculty
+    //
+    // We intentionally do NOT use a "status" filter here
+    // because your Announcement documents may not have a
+    // status field.
+    // ------------------------------------------------------
+
+    let announcementCount = 0;
+
+    try {
+      announcementCount =
+        await Announcement.countDocuments({
+          audience: {
+            $in: ["all", "faculty"],
+          },
+        });
+
+      console.log(
+        "FACULTY ANNOUNCEMENT COUNT:",
+        announcementCount
+      );
+
+    } catch (err) {
+      console.error(
+        "Announcement count failed:",
+        err.message
+      );
+
+      announcementCount = 0;
+    }
+
+
+    // ------------------------------------------------------
+    // RESPONSE
+    // ------------------------------------------------------
+
+    const response = {
       faculty,
 
       stats: {
@@ -178,14 +225,25 @@ router.get("/dashboard/:facultyId", async (req, res) => {
         studentCount:
           studentMap.size,
 
-        announcementCount: 0,
+        announcementCount:
+          announcementCount,
       },
 
       todaySchedules,
-    });
+    };
+
+
+    console.log(
+      "FACULTY DASHBOARD STATS:",
+      response.stats
+    );
+
+    console.log("====================================");
+
+
+    res.json(response);
 
   } catch (err) {
-
     console.error(
       "❌ FACULTY DASHBOARD ERROR:",
       err
@@ -198,9 +256,9 @@ router.get("/dashboard/:facultyId", async (req, res) => {
 });
 
 
-/* ======================================================
-   STUDENTS ASSIGNED TO FACULTY
-====================================================== */
+// ======================================================
+// STUDENTS ASSIGNED TO FACULTY
+// ======================================================
 
 router.get("/students/:facultyId", async (req, res) => {
   try {
@@ -223,11 +281,10 @@ router.get("/students/:facultyId", async (req, res) => {
       "===================================="
     );
 
-    /*
-    ------------------------------------------------------
-    GET FACULTY SCHEDULES
-    ------------------------------------------------------
-    */
+
+    // ------------------------------------------------------
+    // GET FACULTY SCHEDULES
+    // ------------------------------------------------------
 
     const schedules = await Schedule.find({
       faculty: facultyId,
@@ -240,31 +297,30 @@ router.get("/students/:facultyId", async (req, res) => {
       schedules.length
     );
 
+
     if (!schedules.length) {
       return res.json([]);
     }
 
-    /*
-    ------------------------------------------------------
-    STUDENT MAP
-    ------------------------------------------------------
-    */
+
+    // ------------------------------------------------------
+    // STUDENT MAP
+    // ------------------------------------------------------
 
     const studentMap = new Map();
 
-    /*
-    ------------------------------------------------------
-    LOOP THROUGH FACULTY CLASSES
-    ------------------------------------------------------
-    */
+
+    // ------------------------------------------------------
+    // LOOP THROUGH FACULTY CLASSES
+    // ------------------------------------------------------
 
     for (const schedule of schedules) {
-
       const academicYear =
         getId(schedule.academicYear);
 
       const semester =
         getId(schedule.semester);
+
 
       const query = {
         gradeLevel:
@@ -277,6 +333,7 @@ router.get("/students/:facultyId", async (req, res) => {
           "Enrolled",
       };
 
+
       if (academicYear) {
         query.academicYear =
           isObjectId(academicYear)
@@ -284,12 +341,14 @@ router.get("/students/:facultyId", async (req, res) => {
             : String(academicYear);
       }
 
+
       if (semester) {
         query.semester =
           isObjectId(semester)
             ? semester
             : String(semester);
       }
+
 
       console.log(
         "------------------------------------"
@@ -320,16 +379,14 @@ router.get("/students/:facultyId", async (req, res) => {
         semester
       );
 
-      /*
-      ----------------------------------------------------
-      FIND ENROLLED STUDENTS
-      ----------------------------------------------------
-      */
+
+      // ----------------------------------------------------
+      // FIND ENROLLED STUDENTS
+      // ----------------------------------------------------
 
       let enrollments = [];
 
       try {
-
         enrollments =
           await Enrollment.find(query)
             .populate(
@@ -339,7 +396,6 @@ router.get("/students/:facultyId", async (req, res) => {
             .lean();
 
       } catch (err) {
-
         console.error(
           "Enrollment lookup error:",
           err.message
@@ -348,56 +404,41 @@ router.get("/students/:facultyId", async (req, res) => {
         continue;
       }
 
+
       console.log(
         "Matching enrollments:",
         enrollments.length
       );
 
-      /* ================= ANNOUNCEMENTS ================= */
 
-let announcementCount = 0;
-
-try {
-  announcementCount =
-    await Announcement.countDocuments({
-      audience: {
-        $in: ["all", "faculty"]
-      }
-    });
-} catch (err) {
-  console.log(
-    "Announcement count skipped:",
-    err.message
-  );
-}
-
-      /*
-      ----------------------------------------------------
-      ADD STUDENTS
-      ----------------------------------------------------
-      */
+      // ----------------------------------------------------
+      // ADD STUDENTS
+      // ----------------------------------------------------
 
       for (const enrollment of enrollments) {
-
-        if (!enrollment.student)
+        if (!enrollment.student) {
           continue;
+        }
+
 
         const student =
           enrollment.student;
 
+
         const studentId =
           String(student._id);
 
-        /*
-        First time seeing student
-        */
+
+        // --------------------------------------------------
+        // FIRST TIME SEEING STUDENT
+        // --------------------------------------------------
 
         if (!studentMap.has(studentId)) {
-
           studentMap.set(
             studentId,
             {
-              _id: student._id,
+              _id:
+                student._id,
 
               firstName:
                 student.firstName,
@@ -437,24 +478,23 @@ try {
 
         } else {
 
-          /*
-          Student already exists because they
-          belong to another class taught by
-          the same faculty.
-          */
+          // ------------------------------------------------
+          // STUDENT ALREADY EXISTS
+          // ------------------------------------------------
 
           const existing =
             studentMap.get(studentId);
 
+
           const exists =
             existing.subjects.some(
-              s =>
-                String(s.scheduleId) ===
+              (subject) =>
+                String(subject.scheduleId) ===
                 String(schedule._id)
             );
 
-          if (!exists) {
 
+          if (!exists) {
             existing.subjects.push({
               subject:
                 schedule.subject,
@@ -465,22 +505,21 @@ try {
               scheduleId:
                 schedule._id,
             });
-
           }
         }
       }
     }
 
-    /*
-    ------------------------------------------------------
-    RESPONSE
-    ------------------------------------------------------
-    */
+
+    // ------------------------------------------------------
+    // RESPONSE
+    // ------------------------------------------------------
 
     const students =
       Array.from(
         studentMap.values()
       );
+
 
     console.log(
       "TOTAL STUDENTS RETURNED:",
@@ -491,10 +530,10 @@ try {
       "===================================="
     );
 
+
     res.json(students);
 
   } catch (err) {
-
     console.error(
       "❌ FACULTY STUDENTS ERROR:",
       err
