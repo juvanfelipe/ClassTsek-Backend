@@ -1084,13 +1084,38 @@ router.get(
               faceEnrollmentStatus:
                 enrollment.student.faceEnrollmentStatus,
 
-              samples:
-                (
-                  enrollment.student.faceSamples ||
-                  []
-                ).map(
-                  (_, index) => index
-                ),
+              
+samples: (
+  enrollment.student.faceSamples || []
+)
+  .map((sample, index) => ({ sample, index }))
+  .filter(({ sample }) => {
+    // Cloudinary-backed samples use persistent storage.
+    if (sample.cloudinaryPublicId) {
+      return true;
+    }
+
+    // Legacy local samples are usable only if the
+    // file still exists inside the face-samples folder.
+    if (!sample.imagePath) {
+      return false;
+    }
+
+    const absolutePath = path.resolve(
+      __dirname,
+      "..",
+      sample.imagePath
+    );
+
+    const resolvedUploadDir =
+      path.resolve(uploadDir) + path.sep;
+
+    return (
+      absolutePath.startsWith(resolvedUploadDir) &&
+      fs.existsSync(absolutePath)
+    );
+  })
+  .map(({ index }) => index),
             })
           );
 
