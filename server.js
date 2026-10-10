@@ -20,6 +20,9 @@ const notificationRoutes = require("./routes/notificationRoutes");
 const learningAreaRoutes = require("./routes/LearningAreaRoutes");
 const curriculumSubjectRoutes = require("./routes/CurriculumSubjectRoutes");
 const faceEnrollmentRoutes = require("./routes/faceEnrollmentRoutes");
+const {
+  startAutoAbsentScheduler,
+} = require("./utils/autoAbsent");
 
 const app = express();
 const server = http.createServer(app);
@@ -162,28 +165,35 @@ app.get("/", (req, res) => {
     res.status(200).send("ClassTsek API Running");
 });
 
-// ================= DATABASE =================
+
+/* ================= DATABASE ================= */
 
 mongoose
-    .connect(process.env.MONGO_URI)
-    .then(() => {
-        console.log(
-            "MongoDB Connected Successfully!"
-        );
-    })
-    .catch((err) => {
-        console.log(
-            "MongoDB Connection Error:",
-            err
-        );
-    });
+  .connect(process.env.MONGO_URI)
+  .then(() => {
+    console.log("MongoDB Connected Successfully!");
 
-// ================= START SERVER =================
+    // Start automatic absence processing only after
+    // MongoDB is connected and ready.
+    startAutoAbsentScheduler(() => io);
+
+    console.log(
+      "Automatic absence scheduler started."
+    );
+  })
+  .catch((err) => {
+    console.error(
+      "MongoDB Connection Error:",
+      err
+    );
+  });
+
+/* ================= START SERVER ================= */
 
 const PORT = process.env.PORT || 5001;
 
 server.listen(PORT, "0.0.0.0", () => {
-    console.log(
-        `ClassTsek server running on port ${PORT}`
-    );
+  console.log(
+    `ClassTsek server running on port ${PORT}`
+  );
 });
