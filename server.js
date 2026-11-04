@@ -20,6 +20,7 @@ const notificationRoutes = require("./routes/notificationRoutes");
 const learningAreaRoutes = require("./routes/LearningAreaRoutes");
 const curriculumSubjectRoutes = require("./routes/CurriculumSubjectRoutes");
 const faceEnrollmentRoutes = require("./routes/faceEnrollmentRoutes");
+const facultyActivityLogRoutes = require("./routes/facultyActivityLogRoutes");
 const {
   startAutoAbsentScheduler,
 } = require("./utils/autoAbsent");
@@ -103,7 +104,7 @@ app.use(
 );
 
 app.use("/api/auth", authRoutes);
-
+app.use("/api/faculty-logs", facultyActivityLogRoutes);
 app.use(
     "/api/attendance",
     attendanceRoutes
