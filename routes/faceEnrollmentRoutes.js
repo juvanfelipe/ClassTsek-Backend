@@ -997,7 +997,7 @@ router.get(
           path: "student",
 
           select:
-            "+faceSamples firstName middleName lastName schoolId faceEnrollmentStatus",
+            "+faceSamples firstName middleName lastName schoolId faceEnrollmentStatus isDemo demoSource",
         });
 
       // =================================================
@@ -1083,6 +1083,11 @@ router.get(
 
               faceEnrollmentStatus:
                 enrollment.student.faceEnrollmentStatus,
+
+              // Synthetic performance fixtures are downloaded/processed by Android,
+              // but excluded from the live student identity matching list.
+              isDemo:
+                enrollment.student.isDemo === true,
 
               
 samples: (
@@ -1568,9 +1573,5 @@ router.get("/faculty/me/samples", verifyToken, async (req, res) => {
     return res.status(500).json({ message: "Unable to load faculty face samples." });
   }
 });
-
-// =====================================================
-// EXPORT
-// =====================================================
 
 module.exports = router;

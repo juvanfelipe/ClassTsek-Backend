@@ -152,6 +152,18 @@ status: {
   default: "active",
 },
 
+// Explicit marker for synthetic demo/performance-test accounts.
+// Normal production accounts remain isDemo=false by default.
+isDemo: {
+  type: Boolean,
+  default: false,
+},
+
+demoSource: {
+  type: String,
+  default: null,
+},
+
 children: [
   {
     type: mongoose.Schema.Types.ObjectId,
