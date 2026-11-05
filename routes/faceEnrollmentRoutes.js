@@ -1488,6 +1488,87 @@ router.use(
   }
 );
 
+
+// =====================================================
+// FACULTY FACE ENROLLMENT (ADMIN CONTROLLED)
+// POST /api/face-enrollment/faculty/:schoolId
+// GET  /api/face-enrollment/faculty/me/samples
+// =====================================================
+router.post(
+  "/faculty/:schoolId",
+  verifyToken,
+  requireAdmin,
+  upload.single("image"),
+  async (req, res) => {
+    try {
+      const schoolId = String(req.params.schoolId || "").trim();
+      const source = req.body.source;
+      if (!schoolId) return res.status(400).json({ message: "Faculty school ID is required." });
+      if (source !== "camera" && source !== "upload") {
+        return res.status(400).json({ message: 'Source must be either "camera" or "upload".' });
+      }
+      if (!req.file) return res.status(400).json({ message: "Face image is required." });
+
+      const metadata = await sharp(req.file.path).metadata();
+      if (!metadata.width || !metadata.height || metadata.width < 112 || metadata.height < 112) {
+        return res.status(400).json({ message: "Face image must be at least 112x112 pixels." });
+      }
+
+      const faculty = await User.findOne({ schoolId, role: "faculty" }).select("+faceSamples");
+      if (!faculty) return res.status(404).json({ message: "Faculty account not found." });
+      faculty.faceSamples = faculty.faceSamples || [];
+      if (faculty.faceSamples.length >= 5) {
+        return res.status(400).json({ message: "Maximum of 5 face samples reached. Remove existing samples before re-enrolling." });
+      }
+
+      const publicId = `classtsek/faculty-face-samples/${path.parse(req.file.filename).name}`;
+      const uploaded = await cloudinary.uploader.upload(req.file.path, {
+        public_id: publicId, resource_type: "image", type: "authenticated", overwrite: true,
+      });
+      const relativePath = path.relative(path.join(__dirname, ".."), req.file.path).replace(/\\/g, "/");
+      faculty.faceSamples.push({
+        imagePath: relativePath, source, createdAt: new Date(),
+        cloudinaryPublicId: uploaded.public_id,
+        cloudinaryResourceType: uploaded.resource_type,
+        cloudinaryType: uploaded.type,
+      });
+      faculty.faceEnrollmentStatus = "enrolled";
+      await faculty.save();
+      return res.status(201).json({ message: "Faculty face sample enrolled successfully.", faceEnrollmentStatus: faculty.faceEnrollmentStatus, sampleCount: faculty.faceSamples.length });
+    } catch (error) {
+      console.error("FACULTY FACE ENROLLMENT ERROR:", error);
+      return res.status(500).json({ message: error.message || "Unable to enroll faculty face." });
+    } finally {
+      if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    }
+  }
+);
+
+// A faculty member can retrieve only their own enrolled reference samples.
+router.get("/faculty/me/samples", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "faculty") {
+      return res.status(403).json({ message: "Faculty access required." });
+    }
+    const faculty = await User.findById(req.user.id).select("+faceSamples faceEnrollmentStatus role");
+    if (!faculty || faculty.role !== "faculty") {
+      return res.status(404).json({ message: "Faculty account not found." });
+    }
+    if (faculty.faceEnrollmentStatus !== "enrolled" || !faculty.faceSamples || faculty.faceSamples.length === 0) {
+      return res.status(404).json({ message: "Your face has not been enrolled by an administrator." });
+    }
+    const samples = faculty.faceSamples.map(sample => ({
+      url: sample.cloudinaryPublicId ? getCloudinaryFaceUrl(sample.cloudinaryPublicId) : null,
+      createdAt: sample.createdAt,
+    })).filter(sample => !!sample.url);
+    if (!samples.length) return res.status(404).json({ message: "No retrievable faculty face samples were found." });
+    return res.json({ faceEnrollmentStatus: faculty.faceEnrollmentStatus, samples });
+  } catch (error) {
+    console.error("GET FACULTY FACE SAMPLES:", error);
+    return res.status(500).json({ message: "Unable to load faculty face samples." });
+  }
+});
+
 // =====================================================
 // EXPORT
 // =====================================================
