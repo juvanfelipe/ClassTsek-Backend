@@ -20,10 +20,17 @@ const attendanceSchema = new mongoose.Schema(
       default: "Present",
     },
 
-    excuseType: {
-      type: String,
-      default: "",
+    excuseType: { type: String, default: "" },
+    excuseReason: { type: String, default: "", maxlength: 1000 },
+    excuseAttachment: {
+      url: { type: String, default: "" },
+      publicId: { type: String, default: "" },
+      originalName: { type: String, default: "" },
+      mimeType: { type: String, default: "" },
+      size: { type: Number, default: 0 },
     },
+    method: { type: String, enum: ["Manual", "Scanned", "Unknown"], default: "Unknown" },
+    recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
 
     timeIn: {
       type: String,

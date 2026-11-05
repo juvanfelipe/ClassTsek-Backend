@@ -1,509 +1,517 @@
 const express = require("express");
-
+const multer = require("multer");
+const { v2: cloudinary } = require("cloudinary");
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 const router = express.Router();
-
+const excuseUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["application/pdf", "image/jpeg", "image/png", "image/webp"];
+    cb(allowed.includes(file.mimetype) ? null : new Error("Excuse attachment must be a PDF, JPG, PNG, or WEBP file."), allowed.includes(file.mimetype));
+  },
+});
+const uploadExcuseDocument = (file) => new Promise((resolve, reject) => {
+  const resourceType = file.mimetype === "application/pdf" ? "raw" : "image";
+  const stream = cloudinary.uploader.upload_stream(
+    { folder: "classtsek/excuses", resource_type: resourceType, use_filename: false },
+    (error, result) => error ? reject(error) : resolve(result)
+  );
+  stream.end(file.buffer);
+});
 const Attendance = require("../models/Attendance");
 const Schedule = require("../models/Schedule");
 const Enrollment = require("../models/Enrollment");
 const User = require("../models/User");
 const Notification = require("../models/Notification");
-
+const FacultyActivityLog = require("../models/FacultyActivityLog");
 const {
-  verifyToken,
+verifyToken,
 } = require("../middleware/authMiddleware");
 
+// Activity logging must never interrupt the attendance workflow.
+async function recordFacultyActivity(facultyId, action, description, details = {}) {
+  if (!facultyId) return;
+  try {
+    await FacultyActivityLog.create({
+      faculty: facultyId,
+      action,
+      description,
+      details,
+    });
+  } catch (error) {
+    console.error("FACULTY ACTIVITY LOG ERROR:", error);
+  }
+}
 // ================= GET ALL =================
 // Admin only
-
 router.get("/", verifyToken, async (req, res) => {
-  try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({
-        message: "Administrator access required.",
-      });
-    }
-
-    const attendance = await Attendance.find()
-      .populate(
-        "studentId",
-        "firstName middleName lastName schoolId"
-      )
-      .populate("scheduleId");
-
-    res.json(attendance);
-  } catch (error) {
-    console.error("GET ATTENDANCE:", error);
-
-    res.status(500).json({
-      message: error.message,
-    });
-  }
+try {
+if (req.user.role !== "admin") {
+return res.status(403).json({
+message: "Administrator access required.",
 });
-
+}
+const attendance = await Attendance.find()
+.populate(
+"studentId",
+"firstName middleName lastName schoolId"
+)
+.populate("scheduleId");
+res.json(attendance);
+} catch (error) {
+console.error("GET ATTENDANCE:", error);
+res.status(500).json({
+message: error.message,
+});
+}
+});
 // ================= PARENT ATTENDANCE =================
 // Parent can only view attendance of their linked children.
-
 router.get(
-  "/parent/:parentId",
-  verifyToken,
-  async (req, res) => {
-    try {
-      const { parentId } = req.params;
-
-      // Only parents/guardians can use this route.
-      if (
-        req.user.role !== "parent" &&
-        req.user.role !== "guardian"
-      ) {
-        return res.status(403).json({
-          message:
-            "Parent or guardian access required.",
-        });
-      }
-
-      // Parent can only access their own account.
-      if (req.user.id !== parentId) {
-        return res.status(403).json({
-          message:
-            "You are not authorized to view this parent's attendance.",
-        });
-      }
-
-      // Get the logged-in parent.
-      const parent = await User.findById(
-        parentId
-      ).select("children role status");
-
-      if (!parent) {
-        return res.status(404).json({
-          message: "Parent account not found.",
-        });
-      }
-
-      if (parent.status !== "active") {
-        return res.status(403).json({
-          message: "Parent account is inactive.",
-        });
-      }
-
-      // Get linked children.
-      const children = Array.isArray(
-        parent.children
-      )
-        ? parent.children
-        : [];
-
-      const childIds = children
-        .map((child) => {
-          if (
-            typeof child === "object" &&
-            child !== null
-          ) {
-            return child._id || child.id;
-          }
-
-          return child;
-        })
-        .filter(Boolean);
-
-      // No children linked to this parent.
-      if (childIds.length === 0) {
-        return res.json([]);
-      }
-
-      // Get attendance only for the parent's children.
-      const attendance =
-        await Attendance.find({
-          studentId: {
-            $in: childIds,
-          },
-        })
-          .populate(
-            "studentId",
-            "firstName middleName lastName fullName schoolId gradeLevel section"
-          )
-          .populate(
-            "scheduleId",
-            "subject subjectName subjectCode gradeLevel section room startTime endTime days academicYear semester"
-          )
-          .sort({
-            date: -1,
-            createdAt: -1,
-          });
-
-      return res.json(attendance);
-    } catch (error) {
-      console.error(
-        "GET PARENT ATTENDANCE:",
-        error
-      );
-
-      return res.status(500).json({
-        message:
-          "Unable to load parent attendance.",
-      });
-    }
-  }
+"/parent/:parentId",
+verifyToken,
+async (req, res) => {
+try {
+const { parentId } = req.params;
+// Only parents/guardians can use this route.
+if (
+req.user.role !== "parent" &&
+req.user.role !== "guardian"
+) {
+return res.status(403).json({
+message:
+"Parent or guardian access required.",
+});
+}
+// Parent can only access their own account.
+if (req.user.id !== parentId) {
+return res.status(403).json({
+message:
+"You are not authorized to view this parent's attendance.",
+});
+}
+// Get the logged-in parent.
+const parent = await User.findById(
+parentId
+).select("children role status");
+if (!parent) {
+return res.status(404).json({
+message: "Parent account not found.",
+});
+}
+if (parent.status !== "active") {
+return res.status(403).json({
+message: "Parent account is inactive.",
+});
+}
+// Get linked children.
+const children = Array.isArray(
+parent.children
+)
+? parent.children
+: [];
+const childIds = children
+.map((child) => {
+if (
+typeof child === "object" &&
+child !== null
+) {
+return child._id || child.id;
+}
+return child;
+})
+.filter(Boolean);
+// No children linked to this parent.
+if (childIds.length === 0) {
+return res.json([]);
+}
+// Get attendance only for the parent's children.
+const attendance =
+await Attendance.find({
+studentId: {
+$in: childIds,
+},
+})
+.populate(
+"studentId",
+"firstName middleName lastName fullName schoolId gradeLevel section"
+)
+.populate(
+"scheduleId",
+"subject subjectName subjectCode gradeLevel section room startTime endTime days academicYear semester"
+)
+.sort({
+date: -1,
+createdAt: -1,
+});
+return res.json(attendance);
+} catch (error) {
+console.error(
+"GET PARENT ATTENDANCE:",
+error
 );
-
+return res.status(500).json({
+message:
+"Unable to load parent attendance.",
+});
+}
+}
+);
 // ================= STUDENT ATTENDANCE =================
 // Get attendance records for one student.
-
 router.get(
-  "/student/:studentId",
-  verifyToken,
-  async (req, res) => {
-    try {
-      const { studentId } = req.params;
-
-      // Only allow the logged-in student
-      // to view their own attendance.
-      if (
-        req.user.role !== "student" ||
-        req.user.id !== studentId
-      ) {
-        return res.status(403).json({
-          message:
-            "Student access denied.",
-        });
-      }
-
-      const records =
-        await Attendance.find({
-          studentId,
-        })
-          .populate(
-            "scheduleId",
-            "subject subjectName subjectCode gradeLevel section room startTime endTime days"
-          )
-          .sort({
-            date: -1,
-            createdAt: -1,
-          });
-
-      return res.json(records);
-    } catch (error) {
-      console.error(
-        "GET STUDENT ATTENDANCE:",
-        error
-      );
-
-      return res.status(500).json({
-        message:
-          "Unable to load student attendance.",
-      });
-    }
-  }
+"/student/:studentId",
+verifyToken,
+async (req, res) => {
+try {
+const { studentId } = req.params;
+// Only allow the logged-in student
+// to view their own attendance.
+if (
+req.user.role !== "student" ||
+req.user.id !== studentId
+) {
+return res.status(403).json({
+message:
+"Student access denied.",
+});
+}
+const records =
+await Attendance.find({
+studentId,
+})
+.populate(
+"scheduleId",
+"subject subjectName subjectCode gradeLevel section room startTime endTime days"
+)
+.sort({
+date: -1,
+createdAt: -1,
+});
+return res.json(records);
+} catch (error) {
+console.error(
+"GET STUDENT ATTENDANCE:",
+error
 );
-
+return res.status(500).json({
+message:
+"Unable to load student attendance.",
+});
+}
+}
+);
 // ================= FACULTY ATTENDANCE =================
-
 router.get(
-  "/faculty/:facultyId",
-  verifyToken,
-  async (req, res) => {
-    try {
-      // Faculty can only access their own attendance.
-      if (
-        req.user.role !== "faculty" ||
-        req.user.id !== req.params.facultyId
-      ) {
-        return res.status(403).json({
-          message:
-            "Faculty access denied.",
-        });
-      }
-
-      const schedules =
-        await Schedule.find({
-          faculty: req.user.id,
-        }).select("_id");
-
-      const scheduleIds =
-        schedules.map(
-          (schedule) =>
-            schedule._id
-        );
-
-      const attendance =
-        await Attendance.find({
-          scheduleId: {
-            $in: scheduleIds,
-          },
-        })
-          .populate(
-            "studentId",
-            "firstName middleName lastName schoolId email gradeLevel section"
-          )
-          .populate(
-            "scheduleId",
-            "subject subjectCode section gradeLevel academicYear semester"
-          )
-          .sort({
-            date: -1,
-            createdAt: -1,
-          });
-
-      res.json(attendance);
-    } catch (error) {
-      console.error(
-        "FACULTY ATTENDANCE:",
-        error
-      );
-
-      res.status(500).json({
-        message: error.message,
-      });
-    }
-  }
+"/faculty/:facultyId",
+verifyToken,
+async (req, res) => {
+try {
+// Faculty can only access their own attendance.
+if (
+req.user.role !== "faculty" ||
+req.user.id !== req.params.facultyId
+) {
+return res.status(403).json({
+message:
+"Faculty access denied.",
+});
+}
+const schedules =
+await Schedule.find({
+faculty: req.user.id,
+}).select("_id");
+const scheduleIds =
+schedules.map(
+(schedule) =>
+schedule._id
 );
-
+const attendance =
+await Attendance.find({
+scheduleId: {
+$in: scheduleIds,
+},
+})
+.populate(
+"studentId",
+"firstName middleName lastName schoolId email gradeLevel section"
+)
+.populate(
+"scheduleId",
+"subject subjectCode section gradeLevel academicYear semester"
+)
+.sort({
+date: -1,
+createdAt: -1,
+});
+res.json(attendance);
+} catch (error) {
+console.error(
+"FACULTY ATTENDANCE:",
+error
+);
+res.status(500).json({
+message: error.message,
+});
+}
+}
+);
 // ================= CREATE =================
-
 router.post(
-  "/",
-  verifyToken,
-  async (req, res) => {
-    try {
-      const {
-        studentId,
-        scheduleId,
-        status,
-        excuseType,
-        timeIn,
-        timeOut,
-        date,
-      } = req.body;
-
-      if (
-        !studentId ||
-        !scheduleId
-      ) {
-        return res.status(400).json({
-          message:
-            "Student and schedule are required.",
-        });
-      }
-
-      // Only faculty or admin can create attendance.
-      if (
-        req.user.role !== "faculty" &&
-        req.user.role !== "admin"
-      ) {
-        return res.status(403).json({
-          message:
-            "You are not allowed to record attendance.",
-        });
-      }
-
-      // Make sure schedule exists.
-      const schedule =
-        await Schedule.findById(
-          scheduleId
-        );
-
-      if (!schedule) {
-        return res.status(404).json({
-          message:
-            "Schedule not found.",
-        });
-      }
-
-      // Faculty can only record attendance
-      // for their own schedule.
-      if (
-        req.user.role === "faculty" &&
-        schedule.faculty.toString() !==
-          req.user.id
-      ) {
-        return res.status(403).json({
-          message:
-            "You are not authorized to record attendance for this class.",
-        });
-      }
-
-      // Make sure student is enrolled in this class.
-      const enrollment =
-        await Enrollment.findOne({
-          student: studentId,
-          academicYear:
-            schedule.academicYear,
-          semester:
-            schedule.semester,
-          gradeLevel:
-            schedule.gradeLevel,
-          section:
-            schedule.section,
-          status: "Enrolled",
-        });
-
-      if (!enrollment) {
-        return res.status(400).json({
-          message:
-            "This student is not enrolled in the selected class.",
-        });
-      }
-
-      // Prevent duplicate attendance.
-      const attendanceDate =
-        date ||
-        new Date().toLocaleDateString();
-
-      const existing =
-        await Attendance.findOne({
-          studentId,
-          scheduleId,
-          date: attendanceDate,
-        });
-
-      if (existing) {
-        return res.status(409).json({
-          message:
-            "Attendance for this student and class has already been recorded today.",
-        });
-      }
-
-      // Create attendance.
-      const attendance =
-        await Attendance.create({
-          studentId,
-          scheduleId,
-          status:
-            status || "Present",
-          excuseType:
-            excuseType || "",
-          timeIn:
-            timeIn || "",
-          timeOut:
-            timeOut || "",
-          date: attendanceDate,
-        });
-
-      // ================= CREATE NOTIFICATION =================
-
-      const student =
-        await User.findById(studentId).select(
-          "firstName middleName lastName schoolId"
-        );
-
-      if (student) {
-        const parents =
-          await User.find({
-            role: {
-              $in: [
-                "parent",
-                "guardian",
-              ],
-            },
-            children: studentId,
-          }).select("_id");
-
-        if (parents.length > 0) {
-          let title =
-            "Attendance Recorded";
-
-          let message =
-            `${student.firstName} ${student.lastName} was marked ${attendance.status} today.`;
-
-          let priority = "Normal";
-
-          if (
-            attendance.status === "Late"
-          ) {
-            title = "Late Attendance";
-
-            message =
-              `${student.firstName} ${student.lastName} was marked Late today.`;
-
-            priority = "Important";
-          }
-
-          if (
-            attendance.status === "Absent"
-          ) {
-            title = "Absence Alert";
-
-            message =
-              `${student.firstName} ${student.lastName} was marked Absent today.`;
-
-            priority = "Urgent";
-          }
-
-          if (
-            attendance.status === "Excused"
-          ) {
-            title =
-              "Excused Attendance";
-
-            message =
-              `${student.firstName} ${student.lastName} was marked Excused today.`;
-          }
-
-          const createdNotifications =
-            await Notification.insertMany(
-              parents.map((parent) => ({
-                recipientId:
-                  parent._id,
-                senderId:
-                  req.user.id,
-                type:
-                  "Attendance",
-                title,
-                message,
-                priority,
-                relatedAttendanceId:
-                  attendance._id,
-                relatedStudentId:
-                  studentId,
-              }))
-            );
-
-          const io =
-            req.app.get("io");
-
-          if (io) {
-            createdNotifications.forEach(
-              (notification) => {
-                io.to(
-                  `user_${notification.recipientId}`
-                ).emit(
-                  "newNotification",
-                  notification
-                );
-              }
-            );
-          }
-        }
-      }
-
-      // Return populated attendance.
-      const result =
-        await Attendance.findById(
-          attendance._id
-        )
-          .populate(
-            "studentId",
-            "firstName middleName lastName schoolId email gradeLevel section"
-          )
-          .populate(
-            "scheduleId",
-            "subject subjectCode section gradeLevel academicYear semester"
-          );
-
-      res.status(201).json(result);
-    } catch (error) {
-      console.error(
-        "CREATE ATTENDANCE:",
-        error
-      );
-
-      res.status(500).json({
-        message: error.message,
-      });
-    }
-  }
+"/",
+verifyToken,
+(req, res, next) => excuseUpload.single("excuseAttachment")(req, res, (err) => err ? res.status(400).json({ message: err.message }) : next()),
+async (req, res) => {
+try {
+const {
+studentId,
+scheduleId,
+status,
+excuseType,
+excuseReason,
+timeIn,
+timeOut,
+date,
+} = req.body;
+if (
+!studentId ||
+!scheduleId
+) {
+return res.status(400).json({
+message:
+"Student and schedule are required.",
+});
+}
+// Only faculty or admin can create attendance.
+if (
+req.user.role !== "faculty" &&
+req.user.role !== "admin"
+) {
+return res.status(403).json({
+message:
+"You are not allowed to record attendance.",
+});
+}
+if (status === "Excused" && (!String(excuseType || "").trim() || !String(excuseReason || "").trim())) {
+  return res.status(400).json({ message: "Select an excuse category and provide the reason/details." });
+}
+// Make sure schedule exists.
+const schedule =
+await Schedule.findById(
+scheduleId
 );
+if (!schedule) {
+return res.status(404).json({
+message:
+"Schedule not found.",
+});
+}
+// Faculty can only record attendance
+// for their own schedule.
+if (
+req.user.role === "faculty" &&
+schedule.faculty.toString() !==
+req.user.id
+) {
+return res.status(403).json({
+message:
+"You are not authorized to record attendance for this class.",
+});
+}
+// Make sure student is enrolled in this class.
+const enrollment =
+await Enrollment.findOne({
+student: studentId,
+academicYear:
+schedule.academicYear,
+semester:
+schedule.semester,
+gradeLevel:
+schedule.gradeLevel,
+section:
+schedule.section,
+status: "Enrolled",
+});
+if (!enrollment) {
+return res.status(400).json({
+message:
+"This student is not enrolled in the selected class.",
+});
+}
+// Prevent duplicate attendance.
+const attendanceDate =
+date ||
+new Date().toLocaleDateString();
+const existing =
+await Attendance.findOne({
+studentId,
+scheduleId,
+date: attendanceDate,
+});
+if (existing) {
+return res.status(409).json({
+message:
+"Attendance for this student and class has already been recorded today.",
+});
+}
+// Store supporting documents in Cloudinary so they persist across server restarts/deploys.
+let uploadedExcuse = null;
+if (req.file && status === "Excused") {
+  try {
+    uploadedExcuse = await uploadExcuseDocument(req.file);
+  } catch (uploadError) {
+    console.error("EXCUSE DOCUMENT UPLOAD:", uploadError);
+    return res.status(502).json({ message: "Unable to upload the excuse document. Please try again." });
+  }
+}
+// Persist the recording method explicitly. The Android and web manual
+// attendance forms send "Manual"; scanner requests default to "Scanned".
+const requestedMethod = String(req.body.method || "").trim().toLowerCase();
+const attendanceMethod = requestedMethod === "manual" ? "Manual" : "Scanned";
 
+// Create attendance.
+const attendance =
+await Attendance.create({
+studentId,
+scheduleId,
+status:
+status || "Present",
+excuseType: status === "Excused" ? String(excuseType || "").trim() : "",
+excuseReason: status === "Excused" ? String(excuseReason || "").trim().slice(0, 1000) : "",
+excuseAttachment: uploadedExcuse ? {
+  url: uploadedExcuse.secure_url,
+  publicId: uploadedExcuse.public_id,
+  originalName: req.file.originalname,
+  mimeType: req.file.mimetype,
+  size: req.file.size,
+} : {},
+method: attendanceMethod,
+recordedBy: req.user.id,
+timeIn:
+timeIn || "",
+timeOut:
+timeOut || "",
+date: attendanceDate,
+});
+// Keep an audit trail tied to the authenticated faculty account.
+if (req.user.role === "faculty") {
+  await recordFacultyActivity(
+    req.user.id,
+    "Attendance Recorded",
+    `Recorded ${attendance.status} ${attendance.method.toLowerCase()} attendance for ${studentId} in ${schedule.subject || "class"}.`,
+    { module: "Attendance", attendanceId: attendance._id, studentId, scheduleId, method: attendance.method, status: attendance.status }
+  );
+}
+// ================= CREATE NOTIFICATION =================
+const student =
+await User.findById(studentId).select(
+"firstName middleName lastName schoolId"
+);
+if (student) {
+const parents =
+await User.find({
+role: {
+$in: [
+"parent",
+"guardian",
+],
+},
+children: studentId,
+}).select("_id");
+if (parents.length > 0) {
+let title =
+"Attendance Recorded";
+let message =
+`${student.firstName} ${student.lastName} was marked ${attendance.status} today.`;
+let priority = "Normal";
+if (
+attendance.status === "Late"
+) {
+title = "Late Attendance";
+message =
+`${student.firstName} ${student.lastName} was marked Late today.`;
+priority = "Important";
+}
+if (
+attendance.status === "Absent"
+) {
+title = "Absence Alert";
+message =
+`${student.firstName} ${student.lastName} was marked Absent today.`;
+priority = "Urgent";
+}
+if (
+attendance.status === "Excused"
+) {
+title =
+"Excused Attendance";
+message =
+`${student.firstName} ${student.lastName} was marked Excused today.`;
+}
+const createdNotifications =
+await Notification.insertMany(
+parents.map((parent) => ({
+recipientId:
+parent._id,
+senderId:
+req.user.id,
+type:
+"Attendance",
+title,
+message,
+priority,
+relatedAttendanceId:
+attendance._id,
+relatedStudentId:
+studentId,
+}))
+);
+const io =
+req.app.get("io");
+if (io) {
+createdNotifications.forEach(
+(notification) => {
+io.to(
+`user_${notification.recipientId}`
+).emit(
+"newNotification",
+notification
+);
+}
+);
+}
+}
+}
+// Return populated attendance.
+const result =
+await Attendance.findById(
+attendance._id
+)
+.populate(
+"studentId",
+"firstName middleName lastName schoolId email gradeLevel section"
+)
+.populate(
+"scheduleId",
+"subject subjectCode section gradeLevel academicYear semester"
+);
+res.status(201).json(result);
+} catch (error) {
+console.error(
+"CREATE ATTENDANCE:",
+error
+);
+res.status(500).json({
+message: error.message,
+});
+}
+}
+);
 // ================= END CLASS =================
 // Faculty may officially end the class from
 // scheduled end time until 10 minutes after.
@@ -514,355 +522,388 @@ router.post(
 // - This does NOT create Time Out notifications.
 // - Face scanning is controlled separately by the Android app.
 // - Server time is used to enforce the 10-minute limit.
-
 router.post(
-  "/end-class",
-  verifyToken,
-  async (req, res) => {
-    try {
-      // Only faculty can end a class.
-      if (req.user.role !== "faculty") {
-        return res.status(403).json({
-          message:
-            "Faculty access required.",
-        });
-      }
-
-      const {
-        scheduleId,
-      } = req.body;
-
-      if (!scheduleId) {
-        return res.status(400).json({
-          message:
-            "Schedule ID is required.",
-        });
-      }
-
-      // Make sure this schedule belongs
-      // to the logged-in faculty.
-      const schedule =
-        await Schedule.findOne({
-          _id: scheduleId,
-          faculty: req.user.id,
-        });
-
-      if (!schedule) {
-        return res.status(404).json({
-          message:
-            "Schedule not found or access denied.",
-        });
-      }
-
-      // =================================================
-      // SERVER-SIDE END CLASS TIME CHECK
-      // =================================================
-
-      const now = new Date();
-
-      const parseTime = (timeString) => {
-        if (!timeString) {
-          return null;
-        }
-
-        const match =
-          timeString
-            .trim()
-            .match(
-              /^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i
-            );
-
-        if (!match) {
-          return null;
-        }
-
-        let hour =
-          parseInt(match[1], 10);
-
-        const minute =
-          parseInt(match[2], 10);
-
-        const period =
-          match[3]
-            ? match[3].toUpperCase()
-            : null;
-
-        if (
-          period === "PM" &&
-          hour !== 12
-        ) {
-          hour += 12;
-        }
-
-        if (
-          period === "AM" &&
-          hour === 12
-        ) {
-          hour = 0;
-        }
-
-        if (
-          hour < 0 ||
-          hour > 23 ||
-          minute < 0 ||
-          minute > 59
-        ) {
-          return null;
-        }
-
-        return {
-          hour,
-          minute,
-        };
-      };
-
-      const endTime =
-        parseTime(schedule.endTime);
-
-      if (!endTime) {
-        return res.status(400).json({
-          message:
-            "Invalid schedule end time.",
-        });
-      }
-
-      // Build today's scheduled end time
-      // using SERVER time/date.
-      const scheduledEnd =
-        new Date(now);
-
-      scheduledEnd.setHours(
-        endTime.hour,
-        endTime.minute,
-        0,
-        0
-      );
-
-      // Teacher can press End Class
-      // only from scheduled end time
-      // until 10 minutes afterward.
-      const graceEnd =
-        new Date(
-          scheduledEnd.getTime() +
-            10 * 60 * 1000
-        );
-
-      // Before scheduled end.
-      if (
-        now.getTime() <
-        scheduledEnd.getTime()
-      ) {
-        return res.status(403).json({
-          message:
-            "The class has not reached its scheduled end time yet.",
-          scheduledEnd:
-            scheduledEnd.toISOString(),
-          graceEnd:
-            graceEnd.toISOString(),
-        });
-      }
-
-      // Ten-minute End Class grace period expired.
-      if (
-        now.getTime() >=
-        graceEnd.getTime()
-      ) {
-        return res.status(403).json({
-          message:
-            "The End Class period has expired. You can no longer end this class.",
-          scheduledEnd:
-            scheduledEnd.toISOString(),
-          graceEnd:
-            graceEnd.toISOString(),
-        });
-      }
-
-      // =================================================
-      // CLASS CAN NOW BE OFFICIALLY ENDED
-      // =================================================
-
-      return res.json({
-        message:
-          "Class ended successfully.",
-        scheduleId:
-          scheduleId,
-        scheduledEnd:
-          scheduledEnd.toISOString(),
-        endedAt:
-          now.toISOString(),
-        graceEnd:
-          graceEnd.toISOString(),
-      });
-    } catch (error) {
-      console.error(
-        "END CLASS ERROR:",
-        error
-      );
-
-      return res.status(500).json({
-        message:
-          "Unable to end class.",
-      });
-    }
-  }
+"/end-class",
+verifyToken,
+async (req, res) => {
+try {
+// Only faculty can end a class.
+if (req.user.role !== "faculty") {
+return res.status(403).json({
+message:
+"Faculty access required.",
+});
+}
+const {
+scheduleId,
+} = req.body;
+if (!scheduleId) {
+return res.status(400).json({
+message:
+"Schedule ID is required.",
+});
+}
+// Make sure this schedule belongs
+// to the logged-in faculty.
+const schedule =
+await Schedule.findOne({
+_id: scheduleId,
+faculty: req.user.id,
+});
+if (!schedule) {
+return res.status(404).json({
+message:
+"Schedule not found or access denied.",
+});
+}
+// =================================================
+// SERVER-SIDE END CLASS TIME CHECK
+// =================================================
+const now = new Date();
+const parseTime = (timeString) => {
+if (!timeString) {
+return null;
+}
+const match =
+timeString
+.trim()
+.match(
+/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i
 );
+if (!match) {
+return null;
+}
+let hour =
+parseInt(match[1], 10);
+const minute =
+parseInt(match[2], 10);
+const period =
+match[3]
+? match[3].toUpperCase()
+: null;
+if (
+period === "PM" &&
+hour !== 12
+) {
+hour += 12;
+}
+if (
+period === "AM" &&
+hour === 12
+) {
+hour = 0;
+}
+if (
+hour < 0 ||
+hour > 23 ||
+minute < 0 ||
+minute > 59
+) {
+return null;
+}
+return {
+hour,
+minute,
+};
+};
+const endTime =
+parseTime(schedule.endTime);
+if (!endTime) {
+return res.status(400).json({
+message:
+"Invalid schedule end time.",
+});
+}
+// Build today's scheduled end time
+// using SERVER time/date.
+const scheduledEnd =
+new Date(now);
+scheduledEnd.setHours(
+endTime.hour,
+endTime.minute,
+0,
+0
+);
+// Teacher can press End Class
+// only from scheduled end time
+// until 10 minutes afterward.
+const graceEnd =
+new Date(
+scheduledEnd.getTime() +
+10 * 60 * 1000
+);
+// Before scheduled end.
+if (
+now.getTime() <
+scheduledEnd.getTime()
+) {
+return res.status(403).json({
+message:
+"The class has not reached its scheduled end time yet.",
+scheduledEnd:
+scheduledEnd.toISOString(),
+graceEnd:
+graceEnd.toISOString(),
+});
+}
+// Ten-minute End Class grace period expired.
+if (
+now.getTime() >=
+graceEnd.getTime()
+) {
+return res.status(403).json({
+message:
+"The End Class period has expired. You can no longer end this class.",
+scheduledEnd:
+scheduledEnd.toISOString(),
+graceEnd:
+graceEnd.toISOString(),
+});
+}
+// =================================================
+// Automatically record Time Out for Present/Late students who still have blank Time Out.
+// Use the schedule's endTime to avoid UTC/server timezone differences.
+const automaticTimeOut = String(schedule.endTime || "").trim();
+const timeoutResult = await Attendance.updateMany(
+  {
+    scheduleId: schedule._id,
+    status: { $in: ["Present", "Late"] },
+    $or: [
+      { timeOut: "" },
+      { timeOut: { $exists: false } },
+      { timeOut: null },
+    ],
+  },
+  { $set: { timeOut: automaticTimeOut } }
+);
+
+await recordFacultyActivity(
+  req.user.id,
+  "Class Ended",
+  `Ended ${schedule.subject || "class"}; ${timeoutResult.modifiedCount || 0} attendance record(s) received an automatic time out.`,
+  { module: "Class Management", scheduleId: schedule._id, timeOutRecordedCount: timeoutResult.modifiedCount || 0 }
+);
+
+// CLASS CAN NOW BE OFFICIALLY ENDED
+// =================================================
+return res.json({
+message:
+"Class ended successfully.",
+scheduleId:
+scheduleId,
+timeOutRecordedCount: timeoutResult.modifiedCount || 0,
+scheduledEnd:
+scheduledEnd.toISOString(),
+endedAt:
+now.toISOString(),
+graceEnd:
+graceEnd.toISOString(),
+});
+} catch (error) {
+console.error(
+"END CLASS ERROR:",
+error
+);
+return res.status(500).json({
+message:
+"Unable to end class.",
+});
+}
+}
+);
+// =====================================================
+// FACULTY EDIT ATTENDANCE RECORD
+// PATCH /api/attendance/:id
+// =====================================================
+router.patch("/:id", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "faculty") {
+      return res.status(403).json({ message: "Only faculty can edit attendance." });
+    }
+
+    const attendance = await Attendance.findById(req.params.id);
+    if (!attendance) {
+      return res.status(404).json({ message: "Attendance record not found." });
+    }
+
+    const schedule = await Schedule.findById(attendance.scheduleId);
+    if (!schedule || String(schedule.faculty) !== String(req.user.id)) {
+      return res.status(403).json({ message: "You are not authorized to edit this attendance." });
+    }
+
+    const allowedStatuses = ["Present", "Late", "Absent", "Excused"];
+    const { status, timeIn, timeOut, excuseType } = req.body;
+    if (status !== undefined && !allowedStatuses.includes(status)) {
+      return res.status(400).json({ message: "Invalid attendance status." });
+    }
+
+    if (status !== undefined) attendance.status = status;
+    if (timeIn !== undefined) attendance.timeIn = String(timeIn).trim();
+    if (timeOut !== undefined) attendance.timeOut = String(timeOut).trim();
+    if (excuseType !== undefined) attendance.excuseType = String(excuseType).trim();
+
+    // Clear time fields when changing to a status that should not
+    // represent a student's attended class session.
+    if (attendance.status === "Absent" || attendance.status === "Excused") {
+      attendance.timeIn = attendance.timeIn || "";
+      attendance.timeOut = attendance.timeOut || "";
+    }
+
+    await attendance.save();
+    await recordFacultyActivity(
+      req.user.id,
+      "Attendance Updated",
+      `Updated an attendance record to ${attendance.status}.`,
+      { module: "Attendance", attendanceId: attendance._id, status: attendance.status }
+    );
+    const updatedAttendance = await Attendance.findById(attendance._id)
+      .populate("studentId", "firstName middleName lastName schoolId profileImage")
+      .populate("scheduleId");
+
+    return res.json({ message: "Attendance updated successfully.", attendance: updatedAttendance });
+  } catch (error) {
+    console.error("EDIT ATTENDANCE ERROR:", error);
+    return res.status(500).json({ message: "Failed to update attendance.", error: error.message });
+  }
+});
 
 // =====================================================
 // FACULTY MANUAL TIME-OUT
 // =====================================================
 router.patch("/:id/time-out", verifyToken, async (req, res) => {
-  try {
-    const { timeOut } = req.body;
-
-    // Faculty only
-    if (req.user.role !== "faculty") {
-      return res.status(403).json({
-        message: "Only faculty can manually set Time Out.",
-      });
-    }
-
-    // Validate Time Out
-    if (!timeOut || typeof timeOut !== "string" || !timeOut.trim()) {
-      return res.status(400).json({
-        message: "Time Out is required.",
-      });
-    }
-
-    console.log("MANUAL TIME-OUT ATTENDANCE ID:", req.params.id);
-
-const attendance = await Attendance.findById(req.params.id);
-
-    if (!attendance) {
-      return res.status(404).json({
-        message: "Attendance record not found.",
-      });
-    }
-
-    // Find the schedule connected to this attendance
-    const schedule = await Schedule.findById(attendance.scheduleId);
-
-    if (!schedule) {
-      return res.status(404).json({
-        message: "Schedule not found.",
-      });
-    }
-
-    // Make sure this schedule belongs to the logged-in faculty
-    if (String(schedule.faculty) !== String(req.user.id)) {
-      return res.status(403).json({
-        message: "You are not authorized to update this attendance record.",
-      });
-    }
-
-    // Only Present/Late attendance should receive Time Out
-    if (
-      attendance.status !== "Present" &&
-      attendance.status !== "Late"
-    ) {
-      return res.status(400).json({
-        message: "Only Present or Late attendance can have a Time Out.",
-      });
-    }
-
-    // Do not create a duplicate or overwrite an existing Time Out
-    if (attendance.timeOut && attendance.timeOut.trim() !== "") {
-      return res.status(400).json({
-        message: "This attendance already has a Time Out.",
-      });
-    }
-
-    attendance.timeOut = timeOut.trim();
-
-    await attendance.save();
-
-    const updatedAttendance = await Attendance.findById(attendance._id)
-      .populate("studentId", "firstName middleName lastName schoolId profileImage")
-      .populate("scheduleId");
-
-    return res.status(200).json({
-      message: "Time Out saved successfully.",
-      attendance: updatedAttendance,
-    });
-  } catch (error) {
-    console.error("MANUAL TIME-OUT ERROR:", error);
-
-    return res.status(500).json({
-      message: "Failed to save Time Out.",
-      error: error.message,
-    });
-  }
+try {
+const { timeOut } = req.body;
+// Faculty only
+if (req.user.role !== "faculty") {
+return res.status(403).json({
+message: "Only faculty can manually set Time Out.",
 });
-
-// ================= DELETE =================
-
-router.delete(
-  "/:id",
-  verifyToken,
-  async (req, res) => {
-    try {
-      if (
-        req.user.role !== "admin" &&
-        req.user.role !== "faculty"
-      ) {
-        return res.status(403).json({
-          message:
-            "You are not allowed to delete attendance.",
-        });
-      }
-
-      const attendance =
-        await Attendance.findById(
-          req.params.id
-        );
-
-      if (!attendance) {
-        return res.status(404).json({
-          message:
-            "Attendance not found.",
-        });
-      }
-
-      // Faculty can only delete attendance
-      // belonging to their own schedule.
-      if (
-        req.user.role === "faculty"
-      ) {
-        const schedule =
-          await Schedule.findById(
-            attendance.scheduleId
-          );
-
-        if (
-          !schedule ||
-          schedule.faculty.toString() !==
-            req.user.id
-        ) {
-          return res.status(403).json({
-            message:
-              "You are not authorized to delete this attendance.",
-          });
-        }
-      }
-
-      await Attendance.findByIdAndDelete(
-        req.params.id
-      );
-
-      res.json({
-        message:
-          "Attendance deleted successfully.",
-      });
-    } catch (error) {
-      console.error(
-        "DELETE ATTENDANCE:",
-        error
-      );
-
-      res.status(500).json({
-        message: error.message,
-      });
-    }
-  }
+}
+// Validate Time Out
+if (!timeOut || typeof timeOut !== "string" || !timeOut.trim()) {
+return res.status(400).json({
+message: "Time Out is required.",
+});
+}
+console.log("MANUAL TIME-OUT ATTENDANCE ID:", req.params.id);
+const attendance = await Attendance.findById(req.params.id);
+if (!attendance) {
+return res.status(404).json({
+message: "Attendance record not found.",
+});
+}
+// Find the schedule connected to this attendance
+const schedule = await Schedule.findById(attendance.scheduleId);
+if (!schedule) {
+return res.status(404).json({
+message: "Schedule not found.",
+});
+}
+// Make sure this schedule belongs to the logged-in faculty
+if (String(schedule.faculty) !== String(req.user.id)) {
+return res.status(403).json({
+message: "You are not authorized to update this attendance record.",
+});
+}
+// Only Present/Late attendance should receive Time Out
+if (
+attendance.status !== "Present" &&
+attendance.status !== "Late"
+) {
+return res.status(400).json({
+message: "Only Present or Late attendance can have a Time Out.",
+});
+}
+// Do not create a duplicate or overwrite an existing Time Out
+if (attendance.timeOut && attendance.timeOut.trim() !== "") {
+return res.status(400).json({
+message: "This attendance already has a Time Out.",
+});
+}
+attendance.timeOut = timeOut.trim();
+await attendance.save();
+await recordFacultyActivity(
+  req.user.id,
+  "Attendance Time Out Recorded",
+  "Recorded a student's time out.",
+  { module: "Attendance", attendanceId: attendance._id, timeOut: attendance.timeOut }
 );
-
+const updatedAttendance = await Attendance.findById(attendance._id)
+.populate("studentId", "firstName middleName lastName schoolId profileImage")
+.populate("scheduleId");
+return res.status(200).json({
+message: "Time Out saved successfully.",
+attendance: updatedAttendance,
+});
+} catch (error) {
+console.error("MANUAL TIME-OUT ERROR:", error);
+return res.status(500).json({
+message: "Failed to save Time Out.",
+error: error.message,
+});
+}
+});
+// ================= DELETE =================
+router.delete(
+"/:id",
+verifyToken,
+async (req, res) => {
+try {
+if (
+req.user.role !== "admin" &&
+req.user.role !== "faculty"
+) {
+return res.status(403).json({
+message:
+"You are not allowed to delete attendance.",
+});
+}
+const attendance =
+await Attendance.findById(
+req.params.id
+);
+if (!attendance) {
+return res.status(404).json({
+message:
+"Attendance not found.",
+});
+}
+// Faculty can only delete attendance
+// belonging to their own schedule.
+if (
+req.user.role === "faculty"
+) {
+const schedule =
+await Schedule.findById(
+attendance.scheduleId
+);
+if (
+!schedule ||
+schedule.faculty.toString() !==
+req.user.id
+) {
+return res.status(403).json({
+message:
+"You are not authorized to delete this attendance.",
+});
+}
+}
+await Attendance.findByIdAndDelete(
+req.params.id
+);
+res.json({
+message:
+"Attendance deleted successfully.",
+});
+} catch (error) {
+console.error(
+"DELETE ATTENDANCE:",
+error
+);
+res.status(500).json({
+message: error.message,
+});
+}
+}
+);
 module.exports = router;
