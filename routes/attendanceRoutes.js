@@ -297,8 +297,8 @@ message:
 "You are not allowed to record attendance.",
 });
 }
-if (status === "Excused" && (!String(excuseType || "").trim() || !String(excuseReason || "").trim())) {
-  return res.status(400).json({ message: "Select an excuse category and provide the reason/details." });
+if (status === "Excused" && !String(excuseType || "").trim()) {
+  return res.status(400).json({ message: "Select an excuse category." });
 }
 // Make sure schedule exists.
 const schedule =
@@ -715,7 +715,11 @@ message:
 // FACULTY EDIT ATTENDANCE RECORD
 // PATCH /api/attendance/:id
 // =====================================================
-router.patch("/:id", verifyToken, async (req, res) => {
+router.patch(
+  "/:id",
+  verifyToken,
+  (req, res, next) => excuseUpload.single("excuseAttachment")(req, res, (err) => err ? res.status(400).json({ message: err.message }) : next()),
+  async (req, res) => {
   try {
     if (req.user.role !== "faculty") {
       return res.status(403).json({ message: "Only faculty can edit attendance." });
@@ -732,21 +736,53 @@ router.patch("/:id", verifyToken, async (req, res) => {
     }
 
     const allowedStatuses = ["Present", "Late", "Absent", "Excused"];
-    const { status, timeIn, timeOut, excuseType } = req.body;
+    const { status, timeIn, timeOut, excuseType, excuseReason } = req.body;
     if (status !== undefined && !allowedStatuses.includes(status)) {
       return res.status(400).json({ message: "Invalid attendance status." });
+    }
+
+    const nextStatus = status !== undefined ? status : attendance.status;
+    if (nextStatus === "Excused") {
+      const nextType = excuseType !== undefined ? String(excuseType).trim() : String(attendance.excuseType || "").trim();
+      const nextReason = excuseReason !== undefined ? String(excuseReason).trim() : String(attendance.excuseReason || "").trim();
+      if (!nextType) {
+        return res.status(400).json({ message: "Select an excuse category." });
+      }
+    }
+
+    let uploadedExcuse = null;
+    if (req.file && nextStatus === "Excused") {
+      try {
+        uploadedExcuse = await uploadExcuseDocument(req.file);
+      } catch (uploadError) {
+        console.error("EXCUSE DOCUMENT UPLOAD:", uploadError);
+        return res.status(502).json({ message: "Unable to upload the excuse attachment. Please try again." });
+      }
     }
 
     if (status !== undefined) attendance.status = status;
     if (timeIn !== undefined) attendance.timeIn = String(timeIn).trim();
     if (timeOut !== undefined) attendance.timeOut = String(timeOut).trim();
     if (excuseType !== undefined) attendance.excuseType = String(excuseType).trim();
+    if (excuseReason !== undefined) attendance.excuseReason = String(excuseReason).trim().slice(0, 1000);
+    if (uploadedExcuse) {
+      attendance.excuseAttachment = {
+        url: uploadedExcuse.secure_url,
+        publicId: uploadedExcuse.public_id,
+        originalName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+      };
+    }
 
-    // Clear time fields when changing to a status that should not
-    // represent a student's attended class session.
+    // Keep existing excuse evidence when editing other fields. The status
+    // is the attendance decision; attachment metadata remains part of its audit trail.
     if (attendance.status === "Absent" || attendance.status === "Excused") {
-      attendance.timeIn = attendance.timeIn || "";
-      attendance.timeOut = attendance.timeOut || "";
+      attendance.timeIn = "";
+      attendance.timeOut = "";
+    }
+    if (attendance.status !== "Excused" && !uploadedExcuse) {
+      // Do not erase prior evidence; it may explain a later status correction.
     }
 
     await attendance.save();
@@ -754,7 +790,7 @@ router.patch("/:id", verifyToken, async (req, res) => {
       req.user.id,
       "Attendance Updated",
       `Updated an attendance record to ${attendance.status}.`,
-      { module: "Attendance", attendanceId: attendance._id, status: attendance.status }
+      { module: "Attendance", attendanceId: attendance._id, status: attendance.status, excuseType: attendance.excuseType }
     );
     const updatedAttendance = await Attendance.findById(attendance._id)
       .populate("studentId", "firstName middleName lastName schoolId profileImage")
